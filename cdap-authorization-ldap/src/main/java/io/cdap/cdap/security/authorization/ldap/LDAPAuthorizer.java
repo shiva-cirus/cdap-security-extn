@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
+import java.util.HashSet;
 import java.util.Hashtable;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -216,8 +217,8 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     logger.info("In enforce original code of dir contect search before filter args");
     // Search for the user group membership
     Object[] filterArgs = new Object[]{
-      searchConfig.getNameAttribute(), entityName, searchConfig.getNameAttribute(),"cdapinstanceadmin",
-      searchConfig.getNameAttribute(),"cdapnamespaceadmin",
+      searchConfig.getNameAttribute(), entityName, searchConfig.getNameAttribute(), "cdapinstanceadmin",
+      searchConfig.getNameAttribute(), "cdapnamespaceadmin",
       searchConfig.getObjectClass(), searchConfig.getMemberAttribute(),
       String.format("%s=%s,%s", userRdnAttribute, principal.getName(), userBaseDn)
     };
@@ -474,10 +475,20 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
   }
 
   @Override
-  public Set<? extends EntityId> isVisible(Set<? extends EntityId> arg0, Principal arg1) throws Exception {
-    // TODO Auto-generated method stub
-    logger.info("Inside Is Visible " + arg0);
-    return arg0;
+  public Set<? extends EntityId> isVisible(Set<? extends EntityId> entityIds, Principal principal) throws Exception {
 
+    logger.info("Inside Is Visible " + entityIds);
+
+    Set<EntityId> visibleEntities = new HashSet<>(entityIds.size());
+    for (EntityId entityId : entityIds) {
+      try {
+        enforce(entityId, principal, Action.ADMIN);
+        logger.info("Entity " + entityId + "is  visible for principal." + principal);
+        visibleEntities.add(entityId);
+      } catch (Exception ex) {
+        logger.info("Entity " + entityId + "is not visible for principal." + principal);
+      }
+    }
+    return visibleEntities;
   }
 }
