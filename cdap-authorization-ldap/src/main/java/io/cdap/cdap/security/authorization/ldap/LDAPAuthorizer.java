@@ -76,7 +76,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
   private DirContext dirContext;
   private SearchConfig instanceSearchConfig;
   private SearchConfig namespaceSearchConfig;
-  private String userBaseDn;
+  private String[] userBaseDNList = null;
   private String userRdnAttribute;
   private boolean searchRecursive;
   private Principal systemPrincipal;
@@ -112,9 +112,13 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     instanceSearchConfig = createSearchConfig(properties, "instance");
     namespaceSearchConfig = createSearchConfig(properties, "namespace");
 
-    userBaseDn = checkAndGet(properties, USER_BASE_DN);
+    String userBaseDn = checkAndGet(properties, USER_BASE_DN);
+    userBaseDNList = userBaseDn.split(";");
+    for (String searchDN : userBaseDNList) {
+      logger.info("UserBaseDN =" + searchDN);
+    }
     userRdnAttribute = checkAndGet(properties, USER_RDN_ATTRIBUTE);
-    logger.info("userBaseDn: " + this.userBaseDn + " ,useRdnAttribute: " + userRdnAttribute);
+    logger.info(" ,useRdnAttribute: " + userRdnAttribute);
     env = new Hashtable<>();
     env.put(Context.INITIAL_CONTEXT_FACTORY, "com.sun.jndi.ldap.LdapCtxFactory");
     for (String key : properties.stringPropertyNames()) {
@@ -203,8 +207,8 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     String entityName;
 
     // Special case for system user that it can always access system namespace
-     if (systemPrincipal.equals(principal)) {
-    // if (systemPrincipal.getName() == principal.getName()) {
+    if (systemPrincipal.equals(principal)) {
+      // if (systemPrincipal.getName() == principal.getName()) {
       logger.info("In validateLDAP, skipping validation for entity: " + entityId.getEntityName()
                     + " ,for principal: " + principal.getName());
       return;
@@ -227,11 +231,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     }
     logger.info("In validateLDAP original code of dir contect search before filter args");
     // Search for the user group membership
-    Object[] filterArgs = new Object[]{
-      searchConfig.getNameAttribute(), entityName, searchConfig.getNameAttribute(),
-      searchConfig.getAdminValue(), searchConfig.getObjectClass(), searchConfig.getMemberAttribute(),
-      String.format("%s=%s,%s", userRdnAttribute, principal.getName(), userBaseDn)
-    };
+
     logger.info("In validateLDAP original code of dir contect search after filter args");
     SearchControls searchControls = new SearchControls();
     searchControls.setDerefLinkFlag(true);
@@ -240,44 +240,58 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     }
     logger.info("In validateLDAP before original code of dir contect search ");
     logger.info("search configbasedn: " + searchConfig.getBaseDn() + " ,filter:" + filter);
-    for (Object obj : filterArgs) {
-      logger.info("filter args: " + obj.toString());
-    }
-    logger.info("In validateLDAP till end of original code ");
-    NamingEnumeration<SearchResult> results = null;
-    boolean isErrorOccurred = false;
-    try {
-      dirContext = new InitialDirContext(env);
-      results = dirContext.search(searchConfig.getBaseDn(),
-                                  filter, filterArgs, searchControls);
-    } catch (CommunicationException ce) {
-      isErrorOccurred = true;
-      logger.info("Communication error occured");
-      if (null != ce.getMessage()) {
-        logger.info("Error is: " + ce.getMessage());
+
+    for (String searchDNs : userBaseDNList) {
+
+      logger.info("Searching LDAP using searchDN = "+ searchDNs );
+      Object[] filterArgs = new Object[]{
+        searchConfig.getNameAttribute(), entityName, searchConfig.getNameAttribute(),
+        searchConfig.getAdminValue(), searchConfig.getObjectClass(), searchConfig.getMemberAttribute(),
+        String.format("%s=%s,%s", userRdnAttribute, principal.getName(), searchDNs)
+      };
+      for (Object obj : filterArgs) {
+        logger.info("filter args: " + obj.toString());
       }
-      logger.log(Level.SEVERE, ce.toString(), ce);
-      throw ce;
-    } catch (Exception e) {
-      isErrorOccurred = true;
-      logger.info("Communication error occured.");
-      logger.log(Level.SEVERE, e.toString(), e);
-      throw e;
-    } finally {
-      if (isErrorOccurred && dirContext != null) {
-        dirContext.close();
+      logger.info("In validateLDAP till end of original code ");
+      NamingEnumeration<SearchResult> results = null;
+      boolean isErrorOccurred = false;
+      try {
+        dirContext = new InitialDirContext(env);
+        results = dirContext.search(searchConfig.getBaseDn(),
+                                    filter, filterArgs, searchControls);
+      } catch (CommunicationException ce) {
+        isErrorOccurred = true;
+        logger.info("Communication error occured");
+        if (null != ce.getMessage()) {
+          logger.info("Error is: " + ce.getMessage());
+        }
+        logger.log(Level.SEVERE, ce.toString(), ce);
+        throw ce;
+      } catch (Exception e) {
+        isErrorOccurred = true;
+        logger.info("Communication error occured.");
+        logger.log(Level.SEVERE, e.toString(), e);
+        throw e;
+      } finally {
+        if (isErrorOccurred && dirContext != null) {
+          dirContext.close();
+        }
+      }
+
+      try {
+        if (results.hasMore()) {
+          logger.info("Found Matching entries found in LDAP .  ");
+          return;
+          //throw new UnauthorizedException(principal, actions, entityId);
+        }
+      } finally {
+        results.close();
       }
     }
 
-    try {
-      if (!results.hasMore()) {
-        logger.info("In validateLDAP No search result came ");
-        throw new UnauthorizedException(principal, actions, entityId);
-      }
-    } finally {
-      results.close();
-    }
-    // Currently assumes membership in a namespace allows full access, hence not checking actions
+    // No matching results found.
+    logger.info("No matching entries found in LDAP.  ");
+    throw new UnauthorizedException(principal, actions, entityId);
 
   }
 
@@ -318,48 +332,50 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     int i = 1;
     // Query for all instances and namespaces that the given principal is a member of
     for (SearchConfig searchConfig : Arrays.asList(instanceSearchConfig, namespaceSearchConfig)) {
-      Object[] filterArgs = new Object[]{
-        searchConfig.getObjectClass(), searchConfig.getMemberAttribute(),
-        String.format("%s=%s,%s", userRdnAttribute, principal.getName(), userBaseDn)
-      };
-      SearchControls searchControls = new SearchControls();
-      searchControls.setDerefLinkFlag(true);
-      searchControls.setReturningAttributes(new String[]{searchConfig.getNameAttribute()});
-      if (searchRecursive) {
-        searchControls.setSearchScope(SearchControls.SUBTREE_SCOPE);
-      }
-      NamingEnumeration<SearchResult> results = null;
-      try {
-
-        logger.info("In listPrivileges before original code of dir contect search ");
-        logger.info("In listPrivileges, search configbasedn: " + searchConfig.getBaseDn() + " ,filter:" + filter);
-        for (Object obj : filterArgs) {
-          logger.info("In listPrivileges, filter args: " + obj.toString());
+      for (String searchDNs : userBaseDNList) {
+        Object[] filterArgs = new Object[]{
+          searchConfig.getObjectClass(), searchConfig.getMemberAttribute(),
+          String.format("%s=%s,%s", userRdnAttribute, principal.getName(), searchDNs)
+        };
+        SearchControls searchControls = new SearchControls();
+        searchControls.setDerefLinkFlag(true);
+        searchControls.setReturningAttributes(new String[]{searchConfig.getNameAttribute()});
+        if (searchRecursive) {
+          searchControls.setSearchScope(SearchControls.SUBTREE_SCOPE);
         }
-        results = dirContext.search(searchConfig.getBaseDn(),
-                                    filter, filterArgs, searchControls);
+        NamingEnumeration<SearchResult> results = null;
+        try {
 
-        // When a user is in a given group, then he is allowed to perform all action in that group
-        while (results.hasMore()) {
-          SearchResult result = results.next();
-          Attribute attribute = result.getAttributes().get(searchConfig.getNameAttribute());
-          if (attribute != null) {
-            String entityName = attribute.get().toString();
-            logger.info("Privilages added to list: " + entityName);
-            for (Action action : Action.values()) {
-              logger.info("Action value: " + action.toString());
-              privileges.add(new Privilege(createEntity(searchConfig, entityName), action));
+          logger.info("In listPrivileges before original code of dir contect search ");
+          logger.info("In listPrivileges, search configbasedn: " + searchConfig.getBaseDn() + " ,filter:" + filter);
+          for (Object obj : filterArgs) {
+            logger.info("In listPrivileges, filter args: " + obj.toString());
+          }
+          results = dirContext.search(searchConfig.getBaseDn(),
+                                      filter, filterArgs, searchControls);
+
+          // When a user is in a given group, then he is allowed to perform all action in that group
+          while (results.hasMore()) {
+            SearchResult result = results.next();
+            Attribute attribute = result.getAttributes().get(searchConfig.getNameAttribute());
+            if (attribute != null) {
+              String entityName = attribute.get().toString();
+              logger.info("Privilages added to list: " + entityName);
+              for (Action action : Action.values()) {
+                logger.info("Action value: " + action.toString());
+                privileges.add(new Privilege(createEntity(searchConfig, entityName), action));
+              }
             }
           }
+        } catch (Exception e) {
+          if (i == 1) {
+            i++;
+          } else {
+            throw e;
+          }
+        } finally {
+          results.close();
         }
-      } catch (Exception e) {
-        if (i == 1) {
-          i++;
-        } else {
-          throw e;
-        }
-      } finally {
-        results.close();
       }
     }
 

@@ -45,6 +45,8 @@ known location on your CDAP Master host.
      - The attribute to search for instance membership
    * - ``security.authorization.extension.config.instanceNameAttribute``
      - The attribute that stores the CDAP instance name
+   * - ``security.authorization.extension.config.instanceAdmin``
+     - The Admin group name to provide access to all instances.
    * - ``security.authorization.extension.config.namespaceBaseDn``
      - The base DN for namespace search
    * - ``security.authorization.extension.config.namespaceObjectClass``
@@ -53,8 +55,10 @@ known location on your CDAP Master host.
      - The attribute to search for namespace membership
    * - ``security.authorization.extension.config.namespaceNameAttribute``
      - The attribute that stores the CDAP namespace name
+   * - ``security.authorization.extension.config.namespaceAdmin``
+     - The Admin group name to provide access to all name spaces.
    * - ``security.authorization.extension.config.userBaseDn``
-     - The base DN for user id search
+     - The semicolon seperated list for base DN for user id search
    * - ``security.authorization.extension.config.userRdnAttribute``
      - The attribute that stores the user RDN
 
