@@ -24,12 +24,14 @@ final class SearchConfig {
   private final String objectClass;
   private final String memberAttribute;
   private final String nameAttribute;
+  private final String adminValue;
 
-  SearchConfig(String baseDn, String objectClass, String memberAttribute, String nameAttribute) {
+  SearchConfig(String baseDn, String objectClass, String memberAttribute, String nameAttribute, String adminValue) {
     this.baseDn = baseDn;
     this.objectClass = objectClass;
     this.memberAttribute = memberAttribute;
     this.nameAttribute = nameAttribute;
+    this.adminValue = adminValue;
   }
 
   String getBaseDn() {
@@ -47,4 +49,6 @@ final class SearchConfig {
   String getNameAttribute() {
     return nameAttribute;
   }
+
+  String getAdminValue() { return adminValue; }
 }
