@@ -33,14 +33,12 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.Hashtable;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -50,7 +48,6 @@ import java.util.logging.SimpleFormatter;
 import javax.naming.CommunicationException;
 import javax.naming.Context;
 import javax.naming.NamingEnumeration;
-import javax.naming.NamingException;
 import javax.naming.directory.Attribute;
 import javax.naming.directory.DirContext;
 import javax.naming.directory.InitialDirContext;
@@ -124,14 +121,16 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     for (String key : properties.stringPropertyNames()) {
       env.put(key, properties.getProperty(key));
     }
-		/* commented not needed, certificate is imported
-		boolean useSSL = "ssl".equals(properties.getProperty(Context.SECURITY_PROTOCOL))
-				|| providerUrl.startsWith("ldaps://");
 
-		if (useSSL && !Boolean.parseBoolean(properties.getProperty(VERIFY_SSL_CERT_PROPERTY))) {
-			env.put("java.naming.ldap.factory.socket", TrustAllSSLSocketFactory.class.getName());
-		}
-		*/
+    boolean useSSL = "ssl".equals(properties.getProperty(Context.SECURITY_PROTOCOL))
+      || providerUrl.startsWith("ldaps://");
+
+    //if (useSSL && !Boolean.parseBoolean(properties.getProperty(VERIFY_SSL_CERT_PROPERTY))) {
+    if (useSSL) {
+      env.put("java.naming.ldap.factory.socket", TrustAllSSLSocketFactory.class.getName());
+      env.put("com.sun.jndi.ldap.object.disableEndpointIdentification", "true");
+    }
+
     // Retrieves the actual LDAP credentials from secure store if needed
 
 		/*
@@ -243,7 +242,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
 
     for (String searchDNs : userBaseDNList) {
 
-      logger.info("Searching LDAP using searchDN = "+ searchDNs );
+      logger.info("Searching LDAP using searchDN = " + searchDNs);
       Object[] filterArgs = new Object[]{
         searchConfig.getNameAttribute(), entityName, searchConfig.getNameAttribute(),
         searchConfig.getAdminValue(), searchConfig.getObjectClass(), searchConfig.getMemberAttribute(),
@@ -256,7 +255,10 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
       NamingEnumeration<SearchResult> results = null;
       boolean isErrorOccurred = false;
       try {
-        dirContext = new InitialDirContext(env);
+        if (dirContext == null) {
+          dirContext = new InitialDirContext(env);
+        }
+        ;
         results = dirContext.search(searchConfig.getBaseDn(),
                                     filter, filterArgs, searchControls);
       } catch (CommunicationException ce) {
@@ -273,9 +275,9 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
         logger.log(Level.SEVERE, e.toString(), e);
         throw e;
       } finally {
-        if (isErrorOccurred && dirContext != null) {
-          dirContext.close();
-        }
+        //if (isErrorOccurred && dirContext != null) {
+        //  dirContext.close();
+        //}
       }
 
       try {
@@ -293,30 +295,6 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     logger.info("No matching entries found in LDAP.  ");
     throw new UnauthorizedException(principal, actions, entityId);
 
-  }
-
-
-  /**
-   * TCS added method
-   *
-   * @param groupNamingEnum
-   * @return
-   */
-  private List<String> getGroupList(NamingEnumeration<?> groupNamingEnum) throws Exception {
-    List<String> groupList = new ArrayList<String>();
-    try {
-      while (groupNamingEnum.hasMoreElements()) {
-        String str = (String) groupNamingEnum.next();
-        groupList.add(str);
-      }
-    } catch (NamingException e) {
-      LOG.error("NamingException occured : ", e);
-      throw e;
-    } catch (Exception e) {
-      LOG.error("Exception occured : ", e);
-      throw e;
-    }
-    return groupList;
   }
 
   @Override
@@ -510,12 +488,17 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     Set<Action> validateAction = new HashSet<>(1);
     validateAction.add(Action.ADMIN);
     for (EntityId entityId : entityIds) {
-      try {
-        validateLDAP(entityId, principal, validateAction);
+      if (entityId instanceof NamespaceId) {
+        try {
+          validateLDAP(entityId, principal, validateAction);
+          logger.info("Entity " + entityId + "is  visible for principal." + principal);
+          visibleEntities.add(entityId);
+        } catch (Exception ex) {
+          logger.info("Entity " + entityId + "is not visible for principal." + principal);
+        }
+      } else {
         logger.info("Entity " + entityId + "is  visible for principal." + principal);
         visibleEntities.add(entityId);
-      } catch (Exception ex) {
-        logger.info("Entity " + entityId + "is not visible for principal." + principal);
       }
     }
     return visibleEntities;
