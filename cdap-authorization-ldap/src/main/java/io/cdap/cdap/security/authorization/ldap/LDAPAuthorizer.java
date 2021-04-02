@@ -41,8 +41,6 @@ import java.util.LinkedHashSet;
 import java.util.Properties;
 import java.util.Set;
 import java.util.logging.FileHandler;
-import java.util.logging.Level;
-import java.util.logging.SimpleFormatter;
 import javax.naming.CommunicationException;
 import javax.naming.Context;
 import javax.naming.NamingEnumeration;
@@ -58,7 +56,6 @@ import javax.naming.directory.SearchResult;
 public class LDAPAuthorizer extends AbstractAuthorizer {
 
   private static final Logger LOG = LoggerFactory.getLogger(LDAPAuthorizer.class);
-  private static final String VERIFY_SSL_CERT_PROPERTY = "sslVerifyCertificate";
   private static final String CREDENTIALS_KEY_NAME = "credentialsKeyName";
 
   private static final String USER_BASE_DN = "userBaseDn";
@@ -66,6 +63,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
   private static final String USER_OBJECT_CLASS = "userObjectClass";
   private static final String USER_ID_ATTRIBUTE = "userIdAttribute";
   private static final String SEARCH_RECURSIVE = "searchRecursive";
+  private static final String ENFORCE_EXTVALIDATION = "enforceExtendedValidation";
 
   private DirContext dirContext;
   private SearchConfig instanceSearchConfig;
@@ -75,29 +73,17 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
   private String userObjectClass;
   private String userIdAttribute;
   private boolean searchRecursive;
+  private boolean enforceExtendedValidation;
   private Principal systemPrincipal;
   private FileHandler handler = null;
   private Hashtable<String, Object> env = null;
-  private java.util.logging.Logger logger = null;
+
 
   @Override
   public void initialize(AuthorizationContext context) throws Exception {
     super.initialize(context);
-    if (handler == null) {
-      handler = new FileHandler("/tmp/auth.log", true);
-      handler.setFormatter(new SimpleFormatter());
-      logger = java.util.logging.Logger.getLogger("io.cdap.cdap.security.authorization.ldap");
-      logger.addHandler(handler);
-    }
-    logger.info("print values in property");
+
     Properties properties = context.getExtensionProperties();
-
-    /*
-    for (Object key : properties.keySet()) {
-      logger.info("key: " + key + " ,value: " + properties.getProperty(key.toString()));
-    }
-    */
-
     String providerUrl = properties.getProperty(Context.PROVIDER_URL);
     if (providerUrl == null) {
       throw new IllegalArgumentException("Missing provider url configuration '" + Context.PROVIDER_URL + "'");
@@ -111,17 +97,9 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
 
     String userBaseDn = checkAndGet(properties, USER_BASE_DN);
     userBaseDNList = userBaseDn.split(";");
-    /*
-    for (String searchDN : userBaseDNList) {
-      logger.info("UserBaseDN =" + searchDN);
-    }
-     */
     userRdnAttribute = checkAndGet(properties, USER_RDN_ATTRIBUTE);
-    logger.info(" ,useRdnAttribute: " + userRdnAttribute);
     userObjectClass = checkAndGet(properties, USER_OBJECT_CLASS);
-    logger.info(" ,userObjectClass: " + userObjectClass);
     userIdAttribute = checkAndGet(properties, USER_ID_ATTRIBUTE);
-    logger.info(" ,userIdAttribute: " + userIdAttribute);
 
     env = new Hashtable<>();
     env.put(Context.INITIAL_CONTEXT_FACTORY, "com.sun.jndi.ldap.LdapCtxFactory");
@@ -132,14 +110,9 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     boolean useSSL = "ssl".equals(properties.getProperty(Context.SECURITY_PROTOCOL))
       || providerUrl.startsWith("ldaps://");
 
-    //if (useSSL && !Boolean.parseBoolean(properties.getProperty(VERIFY_SSL_CERT_PROPERTY))) {
     if (useSSL) {
       env.put("java.naming.ldap.factory.socket", TrustAllSSLSocketFactory.class.getName());
-      env.put("com.sun.jndi.ldap.object.disableEndpointIdentification", "true");
     }
-
-    // Retrieves the actual LDAP credentials from secure store if needed
-
 
     String credentialsKeyName = properties.getProperty(CREDENTIALS_KEY_NAME);
     if (credentialsKeyName != null) {
@@ -152,37 +125,24 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
       env.put(Context.SECURITY_CREDENTIALS, obj);
     }
 
-
-    /*
-    Enumeration<String> enumeration = env.keys();
-    while (enumeration.hasMoreElements()) {
-      String key = enumeration.nextElement();
-      logger.info("key in env:" + key + " ,value in env:" + env.get(key));
-    }
-    */
-
     try {
       dirContext = new InitialDirContext(env);
     } catch (Exception e) {
-      logger.info("Exception occurred while connecting.");
-      logger.log(Level.SEVERE, e.toString(), e);
+      LOG.error("Exception occurred while connecting.", e);
       throw e;
     }
     searchRecursive = Boolean.getBoolean(SEARCH_RECURSIVE);
+    enforceExtendedValidation = Boolean.getBoolean(ENFORCE_EXTVALIDATION);
 
     systemPrincipal = new Principal(UserGroupInformation.getCurrentUser().getShortUserName(),
                                     Principal.PrincipalType.USER);
-
-    logger.info("systemPrincipal name: " + systemPrincipal.getName() +
-                  " ,SystemPrincipleType: " + systemPrincipal.getType());
-
     LOG.info("Initialized {} with properties {}. System user is {}.",
              LDAPAuthorizer.class.getSimpleName(), properties, systemPrincipal);
   }
 
   @Override
   public void destroy() throws Exception {
-    logger.info("In destroy method connection getting closed");
+    LOG.info("In destroy method connection getting closed");
     if (dirContext != null)
       dirContext.close();
   }
@@ -193,22 +153,25 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     //Vodafone Requirements as to limit the users to specific Namespaces. A user given access to namespace have
     // full access to all the functionality in the namespace.  There is no implementation required for now.
     // In future if VF needs to extend and restrict to specific objects like Read Only or to specific pipelines etc.
-    logger.info("In enforce for entity: " + entityId.getEntityName() + " ,for principal: " + principal.getName());
+    LOG.debug("In enforce for entity: " + entityId.getEntityName() + " ,for principal: " + principal.getName());
+    if (entityId instanceof NamespacedEntityId) {
+      validateLDAP(entityId,principal,actions);
+    }else {
+      if (enforceExtendedValidation) {
+        throw new IllegalArgumentException("Unsupported entity type '" + entityId.getClass() +
+                                             "' of entity '" + entityId + "'.");
+      }
+    }
   }
 
   public void validateLDAP(EntityId entityId, Principal principal, Set<Action> actions) throws Exception {
-    if (handler == null) {
-      handler = new FileHandler("/tmp/auth.log", true);
-      logger = java.util.logging.Logger.getLogger("io.cdap.cdap.security.authorization.ldap");
-      logger.addHandler(handler);
-    }
 
-    logger.info("In validateLDAP : " + entityId.getEntityName() + " ,for principal: " + principal.getName());
+    LOG.debug("In validateLDAP : " + entityId.getEntityName() + " ,for principal: " + principal.getName());
 
     if (("hadoop").equalsIgnoreCase(principal.getName()) ||
       ("cdap").equalsIgnoreCase(principal.getName())) {
       //skip validation for hadoop and cdap user
-      logger.info("In validateLDAP, skipping validation for entity: " + entityId.getEntityName()
+      LOG.debug("In validateLDAP, skipping validation for entity: " + entityId.getEntityName()
                     + " ,for principal: " + principal.getName());
       return;
     }
@@ -216,7 +179,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     // Special case for system user that it can always access system namespace
     if (systemPrincipal.equals(principal)) {
       // if (systemPrincipal.getName() == principal.getName()) {
-      logger.info("In validateLDAP, skipping validation for entity: " + entityId.getEntityName()
+      LOG.debug("In validateLDAP, skipping validation for entity: " + entityId.getEntityName()
                     + " ,for principal: " + principal.getName());
       return;
     }
@@ -230,47 +193,29 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
       // Query for membership of the given principal in the instance
       searchConfig = instanceSearchConfig;
       entityName = ((InstanceId) entityId).getInstance();
-      logger.info("Entity is  InstanceId");
     } else if (entityId instanceof NamespacedEntityId) {
       // Query for the membership of the given principal in the namespace
       searchConfig = namespaceSearchConfig;
       entityName = ((NamespacedEntityId) entityId).getNamespace();
-      logger.info("Entity is  NamespacedEntityId");
     } else {
       throw new IllegalArgumentException("Unsupported entity type '" + entityId.getClass() +
                                            "' of entity '" + entityId + "'.");
     }
-    logger.info("In validateLDAP original code of dir contect search before filter args");
-    // Search for the user group membership
-
-    logger.info("In validateLDAP original code of dir contect search after filter args");
     SearchControls searchControls = new SearchControls();
     searchControls.setDerefLinkFlag(true);
     if (searchRecursive) {
       searchControls.setSearchScope(SearchControls.SUBTREE_SCOPE);
     }
-    logger.info("In validateLDAP before original code of dir contect search ");
-    logger.info("search configbasedn: " + searchConfig.getBaseDn() + " ,filter:" + filter);
 
     for (String searchDNs : userBaseDNList) {
 
-      logger.info("Searching LDAP using searchDN = " + searchDNs);
       Object[] filterArgs = new Object[]{
         userObjectClass, userIdAttribute, principal.getName(), searchConfig.getMemberAttribute(),
         String.format("%s=%s,%s", searchConfig.getRdnAttribute(), entityName, searchConfig.getBaseDn(),
                       searchConfig.getMemberAttribute()), searchConfig.getMemberAttribute(),
         String.format("%s=%s,%s", searchConfig.getRdnAttribute(), searchConfig.getAdminValue(),
                       searchConfig.getBaseDn())
-        /*
-        searchConfig.getNameAttribute(), entityName, searchConfig.getNameAttribute(),
-        searchConfig.getAdminValue(), searchConfig.getObjectClass(), searchConfig.getMemberAttribute(),
-        String.format("%s=%s,%s", userRdnAttribute, principal.getName(), searchDNs)
-          */
       };
-      for (Object obj : filterArgs) {
-        logger.info("filter args: " + obj.toString());
-      }
-      logger.info("In validateLDAP till end of original code ");
       NamingEnumeration<SearchResult> results = null;
       boolean isErrorOccurred = false;
       try {
@@ -281,49 +226,32 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
                                     filter, filterArgs, searchControls);
       } catch (CommunicationException ce) {
         isErrorOccurred = true;
-        logger.info("Communication error occured");
         if (null != ce.getMessage()) {
-          logger.info("Error is: " + ce.getMessage());
+          LOG.error("Error is: " + ce.getMessage());
         }
-        logger.log(Level.SEVERE, ce.toString(), ce);
+        LOG.error(ce.toString());
         throw ce;
       } catch (Exception e) {
         isErrorOccurred = true;
-        logger.info("Communication error occured.");
-        logger.log(Level.SEVERE, e.toString(), e);
+        LOG.error(e.toString(), e);
         throw e;
-      } finally {
-        //if (isErrorOccurred && dirContext != null) {
-        //  dirContext.close();
-        //}
       }
 
       try {
         if (results.hasMore()) {
-          logger.info("Found Matching entries found in LDAP .  ");
           return;
-          //throw new UnauthorizedException(principal, actions, entityId);
         }
       } finally {
         results.close();
       }
     }
-
-    // No matching results found.
-    logger.info("No matching entries found in LDAP.  ");
+    LOG.warn("Unauthorized Access for user .  " + principal + "on entity " + entityId);
     throw new UnauthorizedException(principal, actions, entityId);
-
   }
 
   @Override
   public Set<Privilege> listPrivileges(Principal principal) throws Exception {
     Set<Privilege> privileges = new LinkedHashSet<>();
-    if (handler == null) {
-      handler = new FileHandler("/tmp/auth.log", true);
-      logger = java.util.logging.Logger.getLogger("io.cdap.cdap.security.authorization.ldap");
-      logger.addHandler(handler);
-    }
-    logger.info("In list Privilages for principal:" + principal.getName());
     String filter = "(&(objectClass={0})({1}={2}))";
     int i = 1;
     // Query for all instances and namespaces that the given principal is a member of
@@ -342,11 +270,6 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
         NamingEnumeration<SearchResult> results = null;
         try {
 
-          logger.info("In listPrivileges before original code of dir contect search ");
-          logger.info("In listPrivileges, search configbasedn: " + searchConfig.getBaseDn() + " ,filter:" + filter);
-          for (Object obj : filterArgs) {
-            logger.info("In listPrivileges, filter args: " + obj.toString());
-          }
           results = dirContext.search(searchConfig.getBaseDn(),
                                       filter, filterArgs, searchControls);
 
@@ -356,9 +279,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
             Attribute attribute = result.getAttributes().get(searchConfig.getNameAttribute());
             if (attribute != null) {
               String entityName = attribute.get().toString();
-              logger.info("Privilages added to list: " + entityName);
               for (Action action : Action.values()) {
-                logger.info("Action value: " + action.toString());
                 privileges.add(new Privilege(createEntity(searchConfig, entityName), action));
               }
             }
@@ -423,27 +344,6 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     return Collections.emptySet();
   }
 
-	/*
-  @Override
-  public void grant(EntityId entityId, Principal principal, Set<Action> set) throws Exception {
-    // Can't throw exception because it will fail CDAP deployment operation
-    LOG.debug("grant not support");
-  }
-
-  @Override
-  public void revoke(EntityId entityId, Principal principal, Set<Action> set) throws Exception {
-    // Can't throw exception because it will fail CDAP deployment operation
-    LOG.debug("revoke not support");
-  }
-
-  @Override
-  public void revoke(EntityId entityId) throws Exception {
-    // Can't throw exception because it will fail CDAP deployment operation
-    LOG.debug("revoke not support");
-  }
-	 */
-
-
   @Override
   public void grant(Authorizable arg0, Principal arg1, Set<Action> arg2) throws Exception {
     // TODO Auto-generated method stub
@@ -477,12 +377,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     String nameAttribute = checkAndGet(properties, keyPrefix + "NameAttribute");
     String adminValue = checkAndGet(properties, keyPrefix + "Admin");
     String rdnAttribute = checkAndGet(properties, keyPrefix + "RdnAttribute");
-    if (handler == null) {
-      handler = new FileHandler("/tmp/auth.log", true);
-      logger = java.util.logging.Logger.getLogger("io.cdap.cdap.security.authorization.ldap");
-      logger.addHandler(handler);
-    }
-    logger.info("In create Search config for keyPrefix:" + keyPrefix
+    LOG.debug("In create Search config for keyPrefix:" + keyPrefix
                   + "baseDn:" + baseDn + "ObjectClass:" + objectClass
                   + "memberAttribute:" + memberAttribute + "nameAttribute:" + nameAttribute);
     return new SearchConfig(baseDn, objectClass, memberAttribute, nameAttribute, adminValue, rdnAttribute);
@@ -501,22 +396,20 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
   @Override
   public Set<? extends EntityId> isVisible(Set<? extends EntityId> entityIds, Principal principal) throws Exception {
 
-    logger.info("Inside Is Visible " + entityIds);
+    LOG.debug("Inside Is Visible " + entityIds);
 
     Set<EntityId> visibleEntities = new HashSet<>(entityIds.size());
     Set<Action> validateAction = new HashSet<>(1);
     validateAction.add(Action.ADMIN);
     for (EntityId entityId : entityIds) {
-      if (entityId instanceof NamespaceId) {
+      if (entityId instanceof NamespacedEntityId) {
         try {
           validateLDAP(entityId, principal, validateAction);
-          logger.info("Entity " + entityId + "is  visible for principal." + principal);
           visibleEntities.add(entityId);
         } catch (Exception ex) {
-          logger.info("Entity " + entityId + "is not visible for principal." + principal);
+          //No action needed as name space will not be visibile
         }
       } else {
-        logger.info("Entity " + entityId + "is  visible for principal." + principal);
         visibleEntities.add(entityId);
       }
     }
