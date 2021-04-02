@@ -35,11 +35,9 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.Hashtable;
 import java.util.LinkedHashSet;
-import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.logging.FileHandler;
@@ -65,20 +63,20 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
 
   private static final String USER_BASE_DN = "userBaseDn";
   private static final String USER_RDN_ATTRIBUTE = "userRdnAttribute";
+  private static final String USER_OBJECT_CLASS = "userObjectClass";
+  private static final String USER_ID_ATTRIBUTE = "userIdAttribute";
   private static final String SEARCH_RECURSIVE = "searchRecursive";
-  //TCS changes
-  private static final String MEMBER_OF = "memberOf";
-  private static final String UNIQUE_ID_REPLACE = "{0}";
 
   private DirContext dirContext;
   private SearchConfig instanceSearchConfig;
   private SearchConfig namespaceSearchConfig;
   private String[] userBaseDNList = null;
   private String userRdnAttribute;
+  private String userObjectClass;
+  private String userIdAttribute;
   private boolean searchRecursive;
   private Principal systemPrincipal;
   private FileHandler handler = null;
-  private Map<String, String> userPermissionMap = null;
   private Hashtable<String, Object> env = null;
   private java.util.logging.Logger logger = null;
 
@@ -94,9 +92,11 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     logger.info("print values in property");
     Properties properties = context.getExtensionProperties();
 
+    /*
     for (Object key : properties.keySet()) {
-      //logger.info("key: " + key + " ,value: " + properties.getProperty(key.toString()));
+      logger.info("key: " + key + " ,value: " + properties.getProperty(key.toString()));
     }
+    */
 
     String providerUrl = properties.getProperty(Context.PROVIDER_URL);
     if (providerUrl == null) {
@@ -111,11 +111,18 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
 
     String userBaseDn = checkAndGet(properties, USER_BASE_DN);
     userBaseDNList = userBaseDn.split(";");
+    /*
     for (String searchDN : userBaseDNList) {
       logger.info("UserBaseDN =" + searchDN);
     }
+     */
     userRdnAttribute = checkAndGet(properties, USER_RDN_ATTRIBUTE);
     logger.info(" ,useRdnAttribute: " + userRdnAttribute);
+    userObjectClass = checkAndGet(properties, USER_OBJECT_CLASS);
+    logger.info(" ,userObjectClass: " + userObjectClass);
+    userIdAttribute = checkAndGet(properties, USER_ID_ATTRIBUTE);
+    logger.info(" ,userIdAttribute: " + userIdAttribute);
+
     env = new Hashtable<>();
     env.put(Context.INITIAL_CONTEXT_FACTORY, "com.sun.jndi.ldap.LdapCtxFactory");
     for (String key : properties.stringPropertyNames()) {
@@ -133,26 +140,27 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
 
     // Retrieves the actual LDAP credentials from secure store if needed
 
-		/*
-		String credentialsKeyName = properties.getProperty(CREDENTIALS_KEY_NAME);
-		if (credentialsKeyName != null) {
-			int idx = credentialsKeyName.indexOf(':');
-			if (idx < 0) {
-				throw new IllegalArgumentException("The '" + CREDENTIALS_KEY_NAME +
-						"' property must be in the form 'namespace:keyname'");
-			}
-			Object obj = context.get(credentialsKeyName.substring(0, idx), credentialsKeyName.substring(idx + 1));
-			env.put(Context.SECURITY_CREDENTIALS, obj);
-		}
-		*/
 
-    //TCS change
+    String credentialsKeyName = properties.getProperty(CREDENTIALS_KEY_NAME);
+    if (credentialsKeyName != null) {
+      int idx = credentialsKeyName.indexOf(':');
+      if (idx < 0) {
+        throw new IllegalArgumentException("The '" + CREDENTIALS_KEY_NAME +
+                                             "' property must be in the form 'namespace:keyname'");
+      }
+      Object obj = context.get(credentialsKeyName.substring(0, idx), credentialsKeyName.substring(idx + 1));
+      env.put(Context.SECURITY_CREDENTIALS, obj);
+    }
+
+
+    /*
     Enumeration<String> enumeration = env.keys();
-    // iterate using enumeration object
     while (enumeration.hasMoreElements()) {
       String key = enumeration.nextElement();
-      //logger.info("key in env:" + key + " ,value in env:" + env.get(key));
+      logger.info("key in env:" + key + " ,value in env:" + env.get(key));
     }
+    */
+
     try {
       dirContext = new InitialDirContext(env);
     } catch (Exception e) {
@@ -175,15 +183,18 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
   @Override
   public void destroy() throws Exception {
     logger.info("In destroy method connection getting closed");
-    dirContext.close();
+    if (dirContext != null)
+      dirContext.close();
   }
 
 
   @Override
   public void enforce(EntityId entityId, Principal principal, Set<Action> actions) throws Exception {
+    //Vodafone Requirements as to limit the users to specific Namespaces. A user given access to namespace have
+    // full access to all the functionality in the namespace.  There is no implementation required for now.
+    // In future if VF needs to extend and restrict to specific objects like Read Only or to specific pipelines etc.
     logger.info("In enforce for entity: " + entityId.getEntityName() + " ,for principal: " + principal.getName());
   }
-
 
   public void validateLDAP(EntityId entityId, Principal principal, Set<Action> actions) throws Exception {
     if (handler == null) {
@@ -191,7 +202,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
       logger = java.util.logging.Logger.getLogger("io.cdap.cdap.security.authorization.ldap");
       logger.addHandler(handler);
     }
-    InitialDirContext dirContext = null;
+
     logger.info("In validateLDAP : " + entityId.getEntityName() + " ,for principal: " + principal.getName());
 
     if (("hadoop").equalsIgnoreCase(principal.getName()) ||
@@ -201,9 +212,6 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
                     + " ,for principal: " + principal.getName());
       return;
     }
-    String filter = "(&(|({0}={1})({2}={3}))(objectClass={4})({5}={6}))";
-    SearchConfig searchConfig;
-    String entityName;
 
     // Special case for system user that it can always access system namespace
     if (systemPrincipal.equals(principal)) {
@@ -212,6 +220,10 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
                     + " ,for principal: " + principal.getName());
       return;
     }
+
+    String filter = "(&(objectClass={0})({1}={2})(|(({3}={4})({5}={6}))))";
+    SearchConfig searchConfig;
+    String entityName;
 
     // Based on the requested EntityId, use different search config
     if (entityId instanceof InstanceId) {
@@ -244,9 +256,16 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
 
       logger.info("Searching LDAP using searchDN = " + searchDNs);
       Object[] filterArgs = new Object[]{
+        userObjectClass, userIdAttribute, principal.getName(), searchConfig.getMemberAttribute(),
+        String.format("%s=%s,%s", searchConfig.getRdnAttribute(), entityName, searchConfig.getBaseDn(),
+                      searchConfig.getMemberAttribute()), searchConfig.getMemberAttribute(),
+        String.format("%s=%s,%s", searchConfig.getRdnAttribute(), searchConfig.getAdminValue(),
+                      searchConfig.getBaseDn())
+        /*
         searchConfig.getNameAttribute(), entityName, searchConfig.getNameAttribute(),
         searchConfig.getAdminValue(), searchConfig.getObjectClass(), searchConfig.getMemberAttribute(),
         String.format("%s=%s,%s", userRdnAttribute, principal.getName(), searchDNs)
+          */
       };
       for (Object obj : filterArgs) {
         logger.info("filter args: " + obj.toString());
@@ -258,8 +277,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
         if (dirContext == null) {
           dirContext = new InitialDirContext(env);
         }
-        ;
-        results = dirContext.search(searchConfig.getBaseDn(),
+        results = dirContext.search(searchDNs,
                                     filter, filterArgs, searchControls);
       } catch (CommunicationException ce) {
         isErrorOccurred = true;
@@ -458,6 +476,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     String memberAttribute = checkAndGet(properties, keyPrefix + "MemberAttribute");
     String nameAttribute = checkAndGet(properties, keyPrefix + "NameAttribute");
     String adminValue = checkAndGet(properties, keyPrefix + "Admin");
+    String rdnAttribute = checkAndGet(properties, keyPrefix + "RdnAttribute");
     if (handler == null) {
       handler = new FileHandler("/tmp/auth.log", true);
       logger = java.util.logging.Logger.getLogger("io.cdap.cdap.security.authorization.ldap");
@@ -466,7 +485,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     logger.info("In create Search config for keyPrefix:" + keyPrefix
                   + "baseDn:" + baseDn + "ObjectClass:" + objectClass
                   + "memberAttribute:" + memberAttribute + "nameAttribute:" + nameAttribute);
-    return new SearchConfig(baseDn, objectClass, memberAttribute, nameAttribute, adminValue);
+    return new SearchConfig(baseDn, objectClass, memberAttribute, nameAttribute, adminValue, rdnAttribute);
   }
 
   private EntityId createEntity(SearchConfig searchConfig, String id) {

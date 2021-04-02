@@ -26,12 +26,16 @@ final class SearchConfig {
   private final String nameAttribute;
   private final String adminValue;
 
-  SearchConfig(String baseDn, String objectClass, String memberAttribute, String nameAttribute, String adminValue) {
+  private final String rdnAttribute;
+
+  SearchConfig(String baseDn, String objectClass, String memberAttribute, String nameAttribute, String adminValue,
+               String rdnAttribute) {
     this.baseDn = baseDn;
     this.objectClass = objectClass;
     this.memberAttribute = memberAttribute;
     this.nameAttribute = nameAttribute;
     this.adminValue = adminValue;
+    this.rdnAttribute = rdnAttribute;
   }
 
   String getBaseDn() {
@@ -50,5 +54,11 @@ final class SearchConfig {
     return nameAttribute;
   }
 
-  String getAdminValue() { return adminValue; }
+  String getAdminValue() {
+    return adminValue;
+  }
+
+  public String getRdnAttribute() {
+    return rdnAttribute;
+  }
 }
