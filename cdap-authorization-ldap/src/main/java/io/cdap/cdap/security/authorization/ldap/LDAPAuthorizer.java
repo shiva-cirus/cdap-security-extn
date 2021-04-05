@@ -65,6 +65,8 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
   private static final String SEARCH_RECURSIVE = "searchRecursive";
   private static final String ENFORCE_EXTVALIDATION = "enforceExtendedValidation";
   private static final String SYSTEM = "system";
+  private static final int MAX_RETRY_COUNT = 4;
+  private static final int RETRY_WAIT_INTERVAL_MS = 100;
 
   private DirContext dirContext;
   private SearchConfig instanceSearchConfig;
@@ -156,8 +158,8 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     // In future if VF needs to extend and restrict to specific objects like Read Only or to specific pipelines etc.
     LOG.debug("In enforce for entity: " + entityId.getEntityName() + " ,for principal: " + principal.getName());
     if (entityId instanceof NamespacedEntityId) {
-      validateLDAP(entityId,principal,actions);
-    }else {
+      validateLDAP(entityId, principal, actions);
+    } else {
       if (enforceExtendedValidation) {
         throw new IllegalArgumentException("Unsupported entity type '" + entityId.getClass() +
                                              "' of entity '" + entityId + "'.");
@@ -168,12 +170,13 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
   public void validateLDAP(EntityId entityId, Principal principal, Set<Action> actions) throws Exception {
 
     LOG.debug("In validateLDAP : " + entityId.getEntityName() + " ,for principal: " + principal.getName());
+    Thread.currentThread().setContextClassLoader(LDAPAuthorizer.class.getClassLoader());
 
     if (("hadoop").equalsIgnoreCase(principal.getName()) ||
       ("cdap").equalsIgnoreCase(principal.getName())) {
       //skip validation for hadoop and cdap user
       LOG.debug("In validateLDAP, skipping validation for entity: " + entityId.getEntityName()
-                    + " ,for principal: " + principal.getName());
+                  + " ,for principal: " + principal.getName());
       return;
     }
 
@@ -181,7 +184,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     if (systemPrincipal.equals(principal)) {
       // if (systemPrincipal.getName() == principal.getName()) {
       LOG.debug("In validateLDAP, skipping validation for entity: " + entityId.getEntityName()
-                    + " ,for principal: " + principal.getName());
+                  + " ,for principal: " + principal.getName());
       return;
     }
 
@@ -203,7 +206,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
                                            "' of entity '" + entityId + "'.");
     }
 
-    if (entityName.equalsIgnoreCase(SYSTEM)){
+    if (entityName.equalsIgnoreCase(SYSTEM)) {
       //Allow access to services like Wrangler etc
       return;
     }
@@ -223,26 +226,23 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
                       searchConfig.getBaseDn())
       };
       NamingEnumeration<SearchResult> results = null;
-      boolean isErrorOccurred = false;
-      try {
-        if (dirContext == null) {
-          dirContext = new InitialDirContext(env);
+      boolean retry = true;
+      while (retry) {
+        try {
+          results = dirContext.search(searchDNs,
+                                      filter, filterArgs, searchControls);
+          retry = false;
+        } catch (CommunicationException ce) {
+          // Retry connection
+          if (retryConnection() == null) {
+            LOG.error("Error is: " + ce.getMessage());
+            throw ce;
+          }
+        } catch (Exception e) {
+          LOG.error(e.toString(), e);
+          throw e;
         }
-        results = dirContext.search(searchDNs,
-                                    filter, filterArgs, searchControls);
-      } catch (CommunicationException ce) {
-        isErrorOccurred = true;
-        if (null != ce.getMessage()) {
-          LOG.error("Error is: " + ce.getMessage());
-        }
-        LOG.error(ce.toString());
-        throw ce;
-      } catch (Exception e) {
-        isErrorOccurred = true;
-        LOG.error(e.toString(), e);
-        throw e;
       }
-
       try {
         if (results.hasMore()) {
           return;
@@ -368,6 +368,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
 
   }
 
+
   private String checkAndGet(Properties properties, String key) {
     String value = properties.getProperty(key);
     if (value == null) {
@@ -384,8 +385,8 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     String adminValue = checkAndGet(properties, keyPrefix + "Admin");
     String rdnAttribute = checkAndGet(properties, keyPrefix + "RdnAttribute");
     LOG.debug("In create Search config for keyPrefix:" + keyPrefix
-                  + "baseDn:" + baseDn + "ObjectClass:" + objectClass
-                  + "memberAttribute:" + memberAttribute + "nameAttribute:" + nameAttribute);
+                + "baseDn:" + baseDn + "ObjectClass:" + objectClass
+                + "memberAttribute:" + memberAttribute + "nameAttribute:" + nameAttribute);
     return new SearchConfig(baseDn, objectClass, memberAttribute, nameAttribute, adminValue, rdnAttribute);
   }
 
@@ -397,6 +398,26 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     }
     // Shouldn't happen
     throw new IllegalArgumentException("Unknown SearchConfig: " + searchConfig);
+  }
+
+  private DirContext retryConnection() {
+    LOG.debug("Starting Connection Retry. Will try for "+MAX_RETRY_COUNT +
+                " with exponential wait times starting at " + RETRY_WAIT_INTERVAL_MS);
+    int delayCounter = RETRY_WAIT_INTERVAL_MS;
+    for (int rty = 0; rty < MAX_RETRY_COUNT; rty++) {
+      try {
+        LOG.debug("Sleeping for (ms)" + delayCounter);
+        Thread.sleep(delayCounter);
+        dirContext = new InitialDirContext(env);
+        return dirContext;
+      } catch (CommunicationException ce) {
+        delayCounter = delayCounter * 2;
+      } catch (Exception e) {
+        LOG.error(e.toString(), e);
+        break;
+      }
+    }
+    return null;
   }
 
   @Override
