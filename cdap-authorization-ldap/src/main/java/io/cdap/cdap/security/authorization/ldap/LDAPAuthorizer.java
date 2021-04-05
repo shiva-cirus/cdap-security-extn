@@ -64,6 +64,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
   private static final String USER_ID_ATTRIBUTE = "userIdAttribute";
   private static final String SEARCH_RECURSIVE = "searchRecursive";
   private static final String ENFORCE_EXTVALIDATION = "enforceExtendedValidation";
+  private static final String SYSTEM = "system";
 
   private DirContext dirContext;
   private SearchConfig instanceSearchConfig;
@@ -200,6 +201,11 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
     } else {
       throw new IllegalArgumentException("Unsupported entity type '" + entityId.getClass() +
                                            "' of entity '" + entityId + "'.");
+    }
+
+    if (entityName.equalsIgnoreCase(SYSTEM)){
+      //Allow access to services like Wrangler etc
+      return;
     }
     SearchControls searchControls = new SearchControls();
     searchControls.setDerefLinkFlag(true);
