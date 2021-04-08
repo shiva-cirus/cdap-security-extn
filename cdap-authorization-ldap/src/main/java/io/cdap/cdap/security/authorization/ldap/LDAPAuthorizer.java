@@ -170,8 +170,6 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
   public void validateLDAP(EntityId entityId, Principal principal, Set<Action> actions) throws Exception {
 
     LOG.debug("In validateLDAP : " + entityId.getEntityName() + " ,for principal: " + principal.getName());
-    Thread.currentThread().setContextClassLoader(LDAPAuthorizer.class.getClassLoader());
-
     if (("hadoop").equalsIgnoreCase(principal.getName()) ||
       ("cdap").equalsIgnoreCase(principal.getName())) {
       //skip validation for hadoop and cdap user
@@ -197,10 +195,12 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
       // Query for membership of the given principal in the instance
       searchConfig = instanceSearchConfig;
       entityName = ((InstanceId) entityId).getInstance();
+      LOG.debug("Check LDAP for Instance Name " + entityName);
     } else if (entityId instanceof NamespacedEntityId) {
       // Query for the membership of the given principal in the namespace
       searchConfig = namespaceSearchConfig;
       entityName = ((NamespacedEntityId) entityId).getNamespace();
+      LOG.debug("Check LDAP for access to Namespace  " + entityName + " and entity  " + entityId);
     } else {
       throw new IllegalArgumentException("Unsupported entity type '" + entityId.getClass() +
                                            "' of entity '" + entityId + "'.");
@@ -235,6 +235,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
         } catch (CommunicationException ce) {
           // Retry connection
           if (retryConnection() == null) {
+            LOG.error("Retry connection unsuccesful.");
             LOG.error("Error is: " + ce.getMessage());
             throw ce;
           }
@@ -251,7 +252,7 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
         results.close();
       }
     }
-    LOG.warn("Unauthorized Access for user .  " + principal + "on entity " + entityId);
+    LOG.warn("Unauthorized Access for user .  " + principal + "on entity " + entityId + "principal ");
     throw new UnauthorizedException(principal, actions, entityId);
   }
 
@@ -401,22 +402,31 @@ public class LDAPAuthorizer extends AbstractAuthorizer {
   }
 
   private DirContext retryConnection() {
-    LOG.debug("Starting Connection Retry. Will try for "+MAX_RETRY_COUNT +
-                " with exponential wait times starting at " + RETRY_WAIT_INTERVAL_MS);
-    int delayCounter = RETRY_WAIT_INTERVAL_MS;
-    for (int rty = 0; rty < MAX_RETRY_COUNT; rty++) {
-      try {
-        LOG.debug("Sleeping for (ms)" + delayCounter);
-        Thread.sleep(delayCounter);
-        dirContext = new InitialDirContext(env);
-        return dirContext;
-      } catch (CommunicationException ce) {
-        delayCounter = delayCounter * 2;
-      } catch (Exception e) {
-        LOG.error(e.toString(), e);
-        break;
+    ClassLoader oldCL = Thread.currentThread().getContextClassLoader();
+
+    try {
+      Thread.currentThread().setContextClassLoader(LDAPAuthorizer.class.getClassLoader());
+      LOG.debug("Starting Connection Retry. Will try for " + MAX_RETRY_COUNT +
+                  " times with exponential wait times starting at " + RETRY_WAIT_INTERVAL_MS);
+      int delayCounter = RETRY_WAIT_INTERVAL_MS;
+      for (int rty = 0; rty < MAX_RETRY_COUNT; rty++) {
+        try {
+          LOG.debug("Sleeping for (ms)" + delayCounter);
+          Thread.sleep(delayCounter);
+          dirContext = new InitialDirContext(env);
+          return dirContext;
+        } catch (CommunicationException ce) {
+          LOG.debug("Retry connection failed " + ce.getMessage() +"Explanation" + ce.getExplanation());
+          delayCounter = delayCounter * 2;
+        } catch (Exception e) {
+          LOG.error(e.toString(), e);
+          break;
+        }
       }
+    } finally {
+      Thread.currentThread().setContextClassLoader(oldCL);
     }
+    LOG.debug("Retry limit exceeded. Giving up and returning....");
     return null;
   }
 
